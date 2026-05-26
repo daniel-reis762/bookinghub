@@ -216,3 +216,54 @@ def criar_reserva_voo(reserva: ReservaVoo):
     finally:
         cur.close()
         conn.close()
+
+
+
+
+
+@app.get("/hoteis/disponiveis")
+def hoteis_disponiveis(check_in: str, check_out: str, city: str = None, limit: int = 20):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    query = """
+        SELECT DISTINCT
+            h.id,
+            h.name,
+            h.city,
+            h.country,
+            h.stars,
+            h.address
+        FROM hotels h
+        JOIN rooms r ON r.hotel_id = h.id
+        WHERE (%s IS NULL OR h.city = %s)
+        AND r.id NOT IN (
+            SELECT hr.room_id
+            FROM hotel_reservations hr
+            WHERE hr.status != 'cancelled'
+            AND hr.check_in < %s
+            AND hr.check_out > %s
+        )
+        ORDER BY h.stars DESC
+        LIMIT %s;
+    """
+
+    cur.execute(query, (city, city, check_out, check_in, limit))
+    rows = cur.fetchall()
+
+    hoteis = []
+
+    for row in rows:
+        hoteis.append({
+            "id": row[0],
+            "name": row[1],
+            "city": row[2],
+            "country": row[3],
+            "stars": row[4],
+            "address": row[5],
+        })
+
+    cur.close()
+    conn.close()
+
+    return hoteis
