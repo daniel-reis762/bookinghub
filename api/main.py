@@ -267,3 +267,63 @@ def hoteis_disponiveis(check_in: str, check_out: str, city: str = None, limit: i
     conn.close()
 
     return hoteis
+
+
+
+
+
+
+@app.delete("/reservas/{reserva_id}")
+def cancelar_reserva_voo(reserva_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("BEGIN;")
+
+        cur.execute("""
+            SELECT flight_id, status
+            FROM flight_reservations
+            WHERE id = %s
+            FOR UPDATE;
+        """, (reserva_id,))
+
+        reserva = cur.fetchone()
+
+        if reserva is None:
+            raise HTTPException(status_code=404, detail="Reserva não encontrada")
+
+        flight_id = reserva[0]
+        status = reserva[1]
+
+        if status == "cancelled":
+            raise HTTPException(status_code=409, detail="Reserva já está cancelada")
+
+        cur.execute("""
+            UPDATE flight_reservations
+            SET status = 'cancelled',
+                updated_at = NOW()
+            WHERE id = %s;
+        """, (reserva_id,))
+
+        cur.execute("""
+            UPDATE flights
+            SET available_seats = available_seats + 1
+            WHERE id = %s;
+        """, (flight_id,))
+
+        conn.commit()
+
+        return {"mensagem": "Reserva cancelada com sucesso"}
+
+    except HTTPException as e:
+        conn.rollback()
+        raise e
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        cur.close()
+        conn.close()
