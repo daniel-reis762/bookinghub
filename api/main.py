@@ -8,6 +8,12 @@ class ReservaVoo(BaseModel):
     flight_id: int
     seat_number: str
 
+class Pagamento(BaseModel):
+    reservation_type: str
+    reservation_id: int
+    amount: float
+    payment_method: str
+
 
 @app.get("/")
 def home():
@@ -315,6 +321,95 @@ def cancelar_reserva_voo(reserva_id: int):
         conn.commit()
 
         return {"mensagem": "Reserva cancelada com sucesso"}
+
+    except HTTPException as e:
+        conn.rollback()
+        raise e
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+
+
+
+@app.post("/pagamentos")
+def registrar_pagamento(pagamento: Pagamento):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("BEGIN;")
+
+        if pagamento.reservation_type == "flight":
+            cur.execute("""
+                SELECT id, status
+                FROM flight_reservations
+                WHERE id = %s
+                FOR UPDATE;
+            """, (pagamento.reservation_id,))
+        elif pagamento.reservation_type == "hotel":
+            cur.execute("""
+                SELECT id, status
+                FROM hotel_reservations
+                WHERE id = %s
+                FOR UPDATE;
+            """, (pagamento.reservation_id,))
+        else:
+            raise HTTPException(status_code=400, detail="Tipo de reserva inválido")
+
+        reserva = cur.fetchone()
+
+        if reserva is None:
+            raise HTTPException(status_code=404, detail="Reserva não encontrada")
+
+        if reserva[1] == "cancelled":
+            raise HTTPException(status_code=409, detail="Reserva cancelada não pode ser paga")
+
+        cur.execute("""
+            INSERT INTO payments (
+                reservation_type,
+                reservation_id,
+                amount,
+                status,
+                payment_method
+            )
+            VALUES (%s, %s, %s, 'paid', %s)
+            RETURNING id;
+        """, (
+            pagamento.reservation_type,
+            pagamento.reservation_id,
+            pagamento.amount,
+            pagamento.payment_method,
+        ))
+
+        pagamento_id = cur.fetchone()[0]
+
+        if pagamento.reservation_type == "flight":
+            cur.execute("""
+                UPDATE flight_reservations
+                SET status = 'confirmed',
+                    updated_at = NOW()
+                WHERE id = %s;
+            """, (pagamento.reservation_id,))
+        else:
+            cur.execute("""
+                UPDATE hotel_reservations
+                SET status = 'confirmed'
+                WHERE id = %s;
+            """, (pagamento.reservation_id,))
+
+        conn.commit()
+
+        return {
+            "mensagem": "Pagamento registrado com sucesso",
+            "pagamento_id": pagamento_id
+        }
 
     except HTTPException as e:
         conn.rollback()
