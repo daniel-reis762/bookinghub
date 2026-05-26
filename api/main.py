@@ -422,3 +422,46 @@ def registrar_pagamento(pagamento: Pagamento):
     finally:
         cur.close()
         conn.close()
+
+
+
+
+
+@app.get("/relatorios/ocupacao")
+def relatorio_ocupacao(limit: int = 20):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    query = """
+        SELECT
+            f.flight_number,
+            COUNT(fr.id) AS total_reservas,
+            f.total_seats,
+            ROUND(COUNT(fr.id)::numeric / f.total_seats * 100, 2) AS ocupacao_pct
+        FROM flights f
+        LEFT JOIN flight_reservations fr
+            ON fr.flight_id = f.id
+            AND fr.status = 'confirmed'
+        WHERE f.departure_time >= NOW() - INTERVAL '30 days'
+        GROUP BY f.id, f.flight_number, f.total_seats
+        ORDER BY ocupacao_pct DESC
+        LIMIT %s;
+    """
+
+    cur.execute(query, (limit,))
+    rows = cur.fetchall()
+
+    relatorio = []
+
+    for row in rows:
+        relatorio.append({
+            "flight_number": row[0],
+            "total_reservas": row[1],
+            "total_seats": row[2],
+            "ocupacao_pct": float(row[3])
+        })
+
+    cur.close()
+    conn.close()
+
+    return relatorio
