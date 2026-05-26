@@ -55,3 +55,68 @@ def voos_disponiveis(limit: int = 20):
     conn.close()
 
     return voos
+
+
+
+
+
+@app.get("/clientes/{cliente_id}/reservas")
+def reservas_cliente(cliente_id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    query = """
+        SELECT 'voo' AS tipo,
+               fr.id AS reserva_id,
+               f.flight_number AS descricao,
+               f.departure_time AS data,
+               fr.status,
+               p.amount,
+               p.status AS pagamento_status
+        FROM flight_reservations fr
+        JOIN flights f ON f.id = fr.flight_id
+        LEFT JOIN payments p
+            ON p.reservation_id = fr.id
+            AND p.reservation_type = 'flight'
+        WHERE fr.customer_id = %s
+
+        UNION ALL
+
+        SELECT 'hotel' AS tipo,
+               hr.id AS reserva_id,
+               h.name AS descricao,
+               hr.check_in AS data,
+               hr.status,
+               p.amount,
+               p.status AS pagamento_status
+        FROM hotel_reservations hr
+        JOIN rooms r ON r.id = hr.room_id
+        JOIN hotels h ON h.id = r.hotel_id
+        LEFT JOIN payments p
+            ON p.reservation_id = hr.id
+            AND p.reservation_type = 'hotel'
+        WHERE hr.customer_id = %s
+
+        ORDER BY data DESC;
+    """
+
+    cur.execute(query, (cliente_id, cliente_id))
+    rows = cur.fetchall()
+
+    reservas = []
+
+    for row in rows:
+        reservas.append({
+            "tipo": row[0],
+            "reserva_id": row[1],
+            "descricao": row[2],
+            "data": str(row[3]),
+            "status": row[4],
+            "valor_pago": float(row[5]) if row[5] is not None else None,
+            "status_pagamento": row[6]
+        })
+
+    cur.close()
+    conn.close()
+
+    return reservas
