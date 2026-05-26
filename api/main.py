@@ -1,7 +1,12 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from db import get_connection
 
 app = FastAPI()
+class ReservaVoo(BaseModel):
+    customer_id: int
+    flight_id: int
+    seat_number: str
 
 
 @app.get("/")
@@ -120,3 +125,94 @@ def reservas_cliente(cliente_id: int):
     conn.close()
 
     return reservas
+
+
+
+
+@app.post("/reservas/voo")
+def criar_reserva_voo(reserva: ReservaVoo):
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+
+        cur.execute("BEGIN;")
+
+        cur.execute("""
+            SELECT available_seats
+            FROM flights
+            WHERE id = %s
+            FOR UPDATE;
+        """, (reserva.flight_id,))
+
+        voo = cur.fetchone()
+
+        if voo is None:
+            raise HTTPException(status_code=404, detail="Voo não encontrado")
+
+        available_seats = voo[0]
+
+        if available_seats <= 0:
+            raise HTTPException(
+                status_code=409,
+                detail="Não há assentos disponíveis"
+            )
+
+        cur.execute("""
+            SELECT id
+            FROM flight_reservations
+            WHERE flight_id = %s
+            AND seat_number = %s
+            AND status != 'cancelled';
+        """, (reserva.flight_id, reserva.seat_number))
+
+        assento = cur.fetchone()
+
+        if assento:
+            raise HTTPException(
+                status_code=409,
+                detail="Assento já ocupado"
+            )
+
+        cur.execute("""
+            INSERT INTO flight_reservations
+            (customer_id, flight_id, seat_number, status)
+            VALUES (%s, %s, %s, 'confirmed')
+            RETURNING id;
+        """, (
+            reserva.customer_id,
+            reserva.flight_id,
+            reserva.seat_number
+        ))
+
+        reserva_id = cur.fetchone()[0]
+
+        cur.execute("""
+            UPDATE flights
+            SET available_seats = available_seats - 1
+            WHERE id = %s;
+        """, (reserva.flight_id,))
+
+        conn.commit()
+
+        return {
+            "mensagem": "Reserva criada com sucesso",
+            "reserva_id": reserva_id
+        }
+
+    except HTTPException as e:
+        conn.rollback()
+        raise e
+
+    except Exception as e:
+        conn.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+    finally:
+        cur.close()
+        conn.close()
