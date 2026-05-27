@@ -70,8 +70,16 @@ def inserir_airports(cur, quantidade=50):
 
 def inserir_customers(cur, quantidade=2000):
     customers = []
+    cpfs_usados = set()
 
     for i in range(quantidade):
+        cpf = fake.cpf()
+
+        while cpf in cpfs_usados:
+            cpf = fake.cpf()
+
+        cpfs_usados.add(cpf)
+
         cur.execute("""
             INSERT INTO customers (name, email, cpf, phone)
             VALUES (%s, %s, %s, %s)
@@ -79,7 +87,7 @@ def inserir_customers(cur, quantidade=2000):
         """, (
             fake.name(),
             f"cliente{i + 1}@email.com",
-            fake.cpf(),
+            cpf,
             fake.phone_number(),
         ))
 

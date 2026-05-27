@@ -14,6 +14,13 @@ class Pagamento(BaseModel):
     amount: float
     payment_method: str
 
+class ReservaHotel(BaseModel):
+    customer_id: int
+    room_id: int
+    check_in: str
+    check_out: str
+    total_price: float
+
 
 @app.get("/")
 def home():
@@ -465,3 +472,88 @@ def relatorio_ocupacao(limit: int = 20):
     conn.close()
 
     return relatorio
+
+
+
+
+
+@app.post("/reservas/hotel")
+def criar_reserva_hotel(reserva: ReservaHotel):
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("BEGIN;")
+
+        cur.execute("""
+            SELECT id
+            FROM rooms
+            WHERE id = %s
+            FOR UPDATE;
+        """, (reserva.room_id,))
+
+        quarto = cur.fetchone()
+
+        if quarto is None:
+            raise HTTPException(status_code=404, detail="Quarto não encontrado")
+
+        cur.execute("""
+            SELECT id
+            FROM hotel_reservations
+            WHERE room_id = %s
+            AND status != 'cancelled'
+            AND check_in < %s
+            AND check_out > %s;
+        """, (
+            reserva.room_id,
+            reserva.check_out,
+            reserva.check_in
+        ))
+
+        conflito = cur.fetchone()
+
+        if conflito:
+            raise HTTPException(
+                status_code=409,
+                detail="Quarto já reservado nesse período"
+            )
+
+        cur.execute("""
+            INSERT INTO hotel_reservations (
+                customer_id,
+                room_id,
+                check_in,
+                check_out,
+                status,
+                total_price
+            )
+            VALUES (%s, %s, %s, %s, 'confirmed', %s)
+            RETURNING id;
+        """, (
+            reserva.customer_id,
+            reserva.room_id,
+            reserva.check_in,
+            reserva.check_out,
+            reserva.total_price
+        ))
+
+        reserva_id = cur.fetchone()[0]
+
+        conn.commit()
+
+        return {
+            "mensagem": "Reserva de hotel criada com sucesso",
+            "reserva_id": reserva_id
+        }
+
+    except HTTPException as e:
+        conn.rollback()
+        raise e
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        cur.close()
+        conn.close()
