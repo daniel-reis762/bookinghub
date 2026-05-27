@@ -1,6 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from db import get_connection
+import time
+from psycopg2 import errors
 
 app = FastAPI()
 class ReservaVoo(BaseModel):
@@ -145,90 +147,111 @@ def reservas_cliente(cliente_id: int):
 @app.post("/reservas/voo")
 def criar_reserva_voo(reserva: ReservaVoo):
 
-    conn = get_connection()
-    cur = conn.cursor()
+    tentativas = 3
 
-    try:
+    for tentativa in range(tentativas):
 
-        cur.execute("BEGIN;")
+        conn = get_connection()
+        cur = conn.cursor()
 
-        cur.execute("""
-            SELECT available_seats
-            FROM flights
-            WHERE id = %s
-            FOR UPDATE;
-        """, (reserva.flight_id,))
+        try:
 
-        voo = cur.fetchone()
+            cur.execute("BEGIN;")
 
-        if voo is None:
-            raise HTTPException(status_code=404, detail="Voo não encontrado")
+            cur.execute("""
+                SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+            """)
 
-        available_seats = voo[0]
+            cur.execute("""
+                SELECT available_seats
+                FROM flights
+                WHERE id = %s
+                FOR UPDATE;
+            """, (reserva.flight_id,))
 
-        if available_seats <= 0:
+            voo = cur.fetchone()
+
+            if voo is None:
+                raise HTTPException(status_code=404, detail="Voo não encontrado")
+
+            available_seats = voo[0]
+
+            if available_seats <= 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Não há assentos disponíveis"
+                )
+
+            cur.execute("""
+                SELECT id
+                FROM flight_reservations
+                WHERE flight_id = %s
+                AND seat_number = %s
+                AND status != 'cancelled';
+            """, (reserva.flight_id, reserva.seat_number))
+
+            assento = cur.fetchone()
+
+            if assento:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Assento já ocupado"
+                )
+
+            cur.execute("""
+                INSERT INTO flight_reservations
+                (customer_id, flight_id, seat_number, status)
+                VALUES (%s, %s, %s, 'confirmed')
+                RETURNING id;
+            """, (
+                reserva.customer_id,
+                reserva.flight_id,
+                reserva.seat_number
+            ))
+
+            reserva_id = cur.fetchone()[0]
+
+            cur.execute("""
+                UPDATE flights
+                SET available_seats = available_seats - 1
+                WHERE id = %s;
+            """, (reserva.flight_id,))
+
+            conn.commit()
+
+            return {
+                "mensagem": "Reserva criada com sucesso",
+                "reserva_id": reserva_id,
+                "tentativa": tentativa + 1
+            }
+
+        except errors.SerializationFailure:
+
+            conn.rollback()
+
+            if tentativa == tentativas - 1:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Falha de serialização após múltiplas tentativas"
+                )
+
+            time.sleep(1)
+
+        except HTTPException as e:
+            conn.rollback()
+            raise e
+
+        except Exception as e:
+            conn.rollback()
+
             raise HTTPException(
-                status_code=409,
-                detail="Não há assentos disponíveis"
+                status_code=500,
+                detail=str(e)
             )
 
-        cur.execute("""
-            SELECT id
-            FROM flight_reservations
-            WHERE flight_id = %s
-            AND seat_number = %s
-            AND status != 'cancelled';
-        """, (reserva.flight_id, reserva.seat_number))
-
-        assento = cur.fetchone()
-
-        if assento:
-            raise HTTPException(
-                status_code=409,
-                detail="Assento já ocupado"
-            )
-
-        cur.execute("""
-            INSERT INTO flight_reservations
-            (customer_id, flight_id, seat_number, status)
-            VALUES (%s, %s, %s, 'confirmed')
-            RETURNING id;
-        """, (
-            reserva.customer_id,
-            reserva.flight_id,
-            reserva.seat_number
-        ))
-
-        reserva_id = cur.fetchone()[0]
-
-        cur.execute("""
-            UPDATE flights
-            SET available_seats = available_seats - 1
-            WHERE id = %s;
-        """, (reserva.flight_id,))
-
-        conn.commit()
-
-        return {
-            "mensagem": "Reserva criada com sucesso",
-            "reserva_id": reserva_id
-        }
-
-    except HTTPException as e:
-        conn.rollback()
-        raise e
-
-    except Exception as e:
-        conn.rollback()
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
-    finally:
-        cur.close()
-        conn.close()
+        finally:
+            cur.close()
+            conn.close()
 
 
 
@@ -553,6 +576,50 @@ def criar_reserva_hotel(reserva: ReservaHotel):
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        cur.close()
+        conn.close()
+
+
+
+
+
+
+@app.post("/test/falha-transacao")
+def teste_falha_transacao():
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    try:
+
+        cur.execute("BEGIN;")
+
+        cur.execute("""
+            INSERT INTO flight_reservations (
+                customer_id,
+                flight_id,
+                seat_number,
+                status
+            )
+            VALUES (1, 1, 'Z99', 'confirmed');
+        """)
+
+        raise Exception("Falha simulada antes do COMMIT")
+
+        conn.commit()
+
+        return {"mensagem": "Transação concluída"}
+
+    except Exception as e:
+
+        conn.rollback()
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Rollback executado: {str(e)}"
+        )
 
     finally:
         cur.close()
