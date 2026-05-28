@@ -7,6 +7,11 @@ services:
       POSTGRES_PASSWORD: secret
     ports:
       - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./wal_archive:/wal_archive
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
 
   api:
     build: ./api
@@ -14,3 +19,6 @@ services:
       - "8000:8000"
     depends_on:
       - db
+
+volumes:
+  pgdata:
